@@ -49,6 +49,10 @@
   #include <time.h>
 #endif
 
+#ifdef TARGET_STM32F1
+  #include "../../../../Marlin/src/HAL/shared/Delay.h"
+#endif
+
 #if defined(NRF52) || defined(NRF52_SERIES)
 #include "nrf.h"
 
@@ -1894,56 +1898,53 @@ void Adafruit_NeoPixel::show(void) {
   }
 #endif
 #elif defined(TARGET_STM32F1)
-   uint32_t pinMask =  BIT(PIN_MAP[pin].gpio_bit);
-   #define GPIO_SET(IO)   (PIN_MAP[IO].gpio_device->regs->BSRR = pinMask)
-   #define GPIO_CLEAR(IO) (PIN_MAP[IO].gpio_device->regs->BRR =  pinMask)
-  uint8_t           *p   = pixels, *end = p + numBytes,
-                    pix = *p++, mask = 0x80;
-  uint32_t          cyc;
-  uint32_t saveLoad = SYSTICK_BASE->RVR, saveVal = SYSTICK_BASE->CNT;
-#if defined(NEO_KHZ400) // 800 KHz check needed only if 400 KHz support enabled
+  volatile uint8_t  *ptr, *end, p, bitMask;
+  volatile uint32_t  pinMask;
+
+  pinMask =  BIT(PIN_MAP[pin].gpio_bit);
+  ptr     =  pixels;
+  end     =  ptr + numBytes;
+  p       = *ptr++;
+  bitMask =  0x80;
+  
+  #define GPIO_SET(IO)   (PIN_MAP[IO].gpio_device->regs->BSRR = pinMask)
+  #define GPIO_CLEAR(IO) (PIN_MAP[IO].gpio_device->regs->BRR =  pinMask)
+#ifdef NEO_KHZ400 // 800 KHz check needed only if 400 KHz support enabled
   if(is800KHz) {
 #endif
-    uint32_t top = (F_CPU /  800000);       // 1.25µs
-    uint32_t t0  = top - (F_CPU / 2500000); // 0.4µs
-    uint32_t t1  = top - (F_CPU / 1250000); // 0.8µs
-    SYSTICK_BASE->RVR = top - 1; // Config SysTick for NeoPixel bit freq
-    SYSTICK_BASE->CNT  = 0; // Set to start value
     for(;;) {
-      GPIO_SET(pin);
-      cyc = (pix & mask) ? t1 : t0;
-      while(SYSTICK_BASE->CNT > cyc);
-      GPIO_CLEAR(pin);
-      if(!(mask >>= 1)) {
-        if(p >= end) break;
-        pix       = *p++;
-        mask = 0x80;
+      if(p & bitMask) {
+        // data ONE
+        // min: 650 typ: 800 max: 950
+        GPIO_SET(pin);
+        DELAY_NS(700);  //high
+        // min: 300 typ: 450 max: 600
+        GPIO_CLEAR(pin);
+        DELAY_NS(150);  //low
+      } else {
+        // data ZERO
+        // min: 250  typ: 400 max: 550
+        GPIO_SET(pin);
+        DELAY_NS(100);  //high
+        // data low
+        // min: 700 typ: 850 max: 1000
+        GPIO_CLEAR(pin);
+        DELAY_NS(750);  //low
       }
-      while(SYSTICK_BASE->CNT <= cyc);
-    }
-#if defined(NEO_KHZ400)
-  } else { // 400 kHz bitstream
-    uint32_t top = (F_CPU /  400000);       // 2.5µs
-    uint32_t t0  = top - (F_CPU / 2000000); // 0.5µs
-    uint32_t t1  = top - (F_CPU /  833333); // 1.2µs
-    SYSTICK_BASE->RVR = top - 1; // Config SysTick for NeoPixel bit freq
-    SYSTICK_BASE->CNT  = 0;       // Set to start value
-    for(;;) {
-      GPIO_SET(pin);
-      cyc = (pix & mask) ? t1 : t0;
-      while(SYSTICK_BASE->CNT > cyc);
-      GPIO_CLEAR(pin);
-      if(!(mask >>= 1)) {
-        if(p >= end) break;
-        pix       = *p++;
-        mask = 0x80;
+      if(bitMask >>= 1) {
+        // Move on to the next pixel
+        asm("nop;");
+      } else {
+        if(ptr >= end) break;
+        p       = *ptr++;
+        bitMask = 0x80;
       }
-      while(SYSTICK_BASE->CNT <= cyc);
     }
+#ifdef NEO_KHZ400
+  } else { // 400 KHz bitstream
+    // ToDo!
   }
-#endif // NEO_KHZ400
-  SYSTICK_BASE->RVR = saveLoad;          // Restore SysTick rollover to 1 ms
-  SYSTICK_BASE->CNT  = saveVal;           // Restore SysTick value
+#endif
 #elif defined (NRF51)
   uint8_t          *p   = pixels,
                     pix, count, mask;
